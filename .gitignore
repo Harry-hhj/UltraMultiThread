@@ -1,3 +1,10 @@
+# for vscode
+.vscode
+# for jetbrains
 .idea
-cmake-build-debug
-cmake-build-release
+
+# for deployment
+build/
+
+# for MacOS
+.DS_Store

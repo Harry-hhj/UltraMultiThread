@@ -1,27 +1,24 @@
-//
-// Created by xinyang on 2020/11/22.
-//
-
 #ifndef _UMT_OBJ_MANAGER_HPP_
 #define _UMT_OBJ_MANAGER_HPP_
 
+#include <pybind11/pybind11.h>
+#include <pybind11/embed.h>
+#include <pybind11/stl.h>
 #include <mutex>
-#include <memory>
-#include <vector>
-#include <unordered_map>
-
 
 namespace umt {
 
-    /**
-     * @brief 用于导出protect构造函数为public，方便使用std::make_shared创建共享对象
-     */
-    template<class T>
-    class ExportPublicConstructor : public T {
-    public:
-        template<class ...Ts>
-        explicit ExportPublicConstructor(Ts &&...args): T(std::forward<Ts>(args)...) {}
-    };
+    namespace utils {
+        /**
+         * @brief 用于导出protect构造函数为public，方便使用std::make_shared创建共享对象
+         */
+        template<class T>
+        class ExportPublicConstructor : public T {
+        public:
+            template<class ...Ts>
+            explicit ExportPublicConstructor(Ts &&...args) : T(std::forward<Ts>(args)...) {}
+        };
+    }
 
     /**
      * @brief 命名共享对象管理器
@@ -48,7 +45,8 @@ namespace umt {
         static sptr create(const std::string &name, Ts &&...args) {
             std::unique_lock lock(_mtx);
             if (_map.find(name) != _map.end()) return nullptr;
-            sptr p_obj = std::make_shared<ExportPublicConstructor<ObjManager<T>>>(name, std::forward<Ts>(args)...);
+            sptr p_obj = std::make_shared<utils::ExportPublicConstructor<ObjManager<T>>>(name,
+                                                                                         std::forward<Ts>(args)...);
             _map.emplace(name, p_obj);
             return p_obj;
         }
@@ -77,16 +75,17 @@ namespace umt {
             std::unique_lock lock(_mtx);
             auto iter = _map.find(name);
             if (iter != _map.end()) return iter->second.lock();
-            sptr p_obj = std::make_shared<ExportPublicConstructor<ObjManager<T>>>(name, std::forward<Ts>(args)...);
+            sptr p_obj = std::make_shared<utils::ExportPublicConstructor<ObjManager<T>>>(name,
+                                                                                         std::forward<Ts>(args)...);
             _map.emplace(name, p_obj);
             return p_obj;
         }
 
-        static std::vector<std::string> names() {
+        static std::set<std::string> names() {
             std::unique_lock lock(_mtx);
-            std::vector<std::string> _names;
-            for (const auto[n, w]: _map) {
-                _names.emplace_back(n);
+            std::set<std::string> _names;
+            for (const auto &[n, w] : _map) {
+                _names.emplace(n);
             }
             return _names;
         }
@@ -107,7 +106,7 @@ namespace umt {
          * @param args 对象的构造函数参数
          */
         template<class ...Ts>
-        explicit ObjManager(std::string name, Ts &&...args): _name(std::move(name)), T(std::forward<Ts>(args)...) {}
+        explicit ObjManager(std::string name, Ts &&...args) : T(std::forward<Ts>(args)...), _name(std::move(name)) {}
 
     private:
         /// 当前对象名称
@@ -120,42 +119,31 @@ namespace umt {
     };
 
     template<class T>
+    __attribute__((visibility("default")))
     inline std::mutex ObjManager<T>::_mtx;
 
     template<class T>
+    __attribute__((visibility("default")))
     inline std::unordered_map<std::string, typename ObjManager<T>::wptr> ObjManager<T>::_map;
+
 }
 
-#ifdef _UMT_WITH_BOOST_PYTHON_
+#define UMT_EXPORT_OBJMANAGER_ALIAS(name, type, var)                    \
+    void __umt_init_objmanager_##name(pybind11::class_<type>&& var);    \
+    PYBIND11_EMBEDDED_MODULE(ObjManager_##name, m) {                    \
+        using namespace umt;                                            \
+        namespace py = pybind11;                                        \
+        m.def("names", &ObjManager<type>::names);                       \
+        m.def("find", &ObjManager<type>::find);                         \
+        m.def("create", &ObjManager<type>::create<>);                   \
+        m.def("find_or_create", &ObjManager<type>::find_or_create<>);   \
+        try{                                                            \
+            __umt_init_objmanager_##name(                               \
+                py::class_<type, std::shared_ptr<type>>(m, #name));     \
+        } catch (...){}                                                 \
+    }                                                                   \
+    void __umt_init_objmanager_##name(pybind11::class_<type>&& var)
 
-#include <boost/python.hpp>
-#include <boost/python/suite/indexing/vector_indexing_suite.hpp>
-
-namespace umt {
-    /// 导出静态函数类时，防止由于类无法拷贝构造而无法导出
-    template<class T>
-    struct export_static_class {
-    };
-};
-
-/// 导出一个类型的对象管理器至python（被管理的对象类型本身需要另外手动导出至python）。
-#define UMT_EXPORT_PYTHON_OBJ_MANAGER_ALIAS(type, name) do{                     \
-    static_assert(std::is_default_constructible_v<type>,                        \
-        "UMT_EXPORT_PYTHON_OBJ_MANAGER: type must has a default constructor");  \
-    using namespace boost::python;                                              \
-    using namespace umt;                                                        \
-    class_<export_static_class<ObjManager<type>>>("ObjManager_"#name, no_init)  \
-        .def("create", &ObjManager<type>::create<>)                             \
-        .def("find", &ObjManager<type>::find)                                   \
-        .def("find_or_create", &ObjManager<type>::find_or_create<>)             \
-        .def("names", &ObjManager<type>::names);                                \
-    register_ptr_to_python<std::shared_ptr<type>>();                            \
-    class_<std::vector<std::string>>("vector_string")                           \
-        .def(vector_indexing_suite<std::vector<std::string>>());                \
-}while(0)
-
-#define UMT_EXPORT_PYTHON_OBJ_MANAGER(type) UMT_EXPORT_PYTHON_OBJ_MANAGER_ALIAS(type, type)
-
-#endif /* _UMT_WITH_BOOST_PYTHON_ */
+#define UMT_EXPORT_OBJMANAGER(type, var)  UMT_EXPORT_OBJMANAGER_ALIAS(type, type, var)
 
 #endif /* _UMT_OBJ_MANAGER_HPP_ */
