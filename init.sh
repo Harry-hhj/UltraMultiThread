@@ -3,7 +3,7 @@
 
 rm -rf build
 cd scripts
-rm -rf *
+rm -rf !app.py
 cd ..
 rm -f workers.cpp
 rm *.sh
